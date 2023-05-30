@@ -18,12 +18,12 @@ struct MultiSend {
     // each account
     outputs: Vec<Balance>,
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Coin {
     pub denom: String,
     pub amount: i128,
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Balance {
     address: String,
     coins: Vec<Coin>,
@@ -85,96 +85,131 @@ fn calculate_balance_changes(
     definitions: Vec<DenomDefinition>,
     multi_send_tx: MultiSend,
 ) -> Result<Vec<Balance>, String> {
-    let inputs = &multi_send_tx.inputs;
-    //Validate the summations of the i/o on the multi_send_tx prior to continuing
     let mut multi_send_sum: (i128, i128) = (0, 0);
-
-    multi_send_tx
-        .inputs
-        .iter()
-        .zip(&multi_send_tx.outputs)
-        .for_each(|(i, o)| {
-            multi_send_sum.0 += i.coins.iter().fold(0, |_acc, coin| _acc + coin.amount);
-            multi_send_sum.1 += o.coins.iter().fold(0, |_acc, coin| _acc + coin.amount);
-        });
+    //Validate the summations of the i/o on the multi_send_tx prior to continuing
+    multi_send_tx.inputs.iter().for_each(|i| {
+        multi_send_sum.0 += i.coins.iter().fold(0, |_acc, coin| _acc + coin.amount);
+    });
+    multi_send_tx.outputs.iter().for_each(|o| {
+        multi_send_sum.1 += o.coins.iter().fold(0, |_acc, coin| _acc + coin.amount);
+    });
 
     if multi_send_sum.0 == multi_send_sum.1 {
-        //Get a mutable reference to original_balances to return on completion.
-        let mut processed_balances: Vec<Balance> = original_balances;
         //Accumulate HashMaps of balances & deniminations for easy lookup
-        let balances_map = accumulate_balances_map(processed_balances.clone());
+        let balances_map = accumulate_balances_map(original_balances);
+
+        //Tracks the balance changes on an address to a specific coin
+        let mut coin_balance_changes: HashMap<String, HashMap<String, i128>> = HashMap::new();
+
         let denominations_map = accumulate_denominations_map(&definitions);
 
         //Process the inputs accounting for burn/commision rate on sender/issuer
-        for (i, input) in inputs.iter().enumerate() {
-            for (j, coin) in input.coins.iter().enumerate() {
+        //Account changes on the inputs
+        for input in multi_send_tx.inputs.iter() {
+            for (idx, coin) in input.coins.iter().enumerate() {
                 if let Some(definition) = denominations_map.get(&coin.denom) {
-                    if definition.issuer != input.address {
-                        //Calculate the burn/commission amount as per the definition
-                        let burn_amount = round(coin.amount as f64 * definition.burn_rate);
-                        let commision_amount =
-                            round(coin.amount as f64 * definition.commission_rate);
-                        //Unwrap here since we know the address exists in the balances_map
-                        let current_balance =
-                            balances_map.get(&input.address).unwrap().coins[j].amount;
-                        //Ensure the input.address has sufficient balance on the corresponding "coin" denom
-                        if current_balance < coin.amount + burn_amount + commision_amount {
+                    //Only decrease balance by the burn/commission if the address is not the issuer.
+                    if input.address != definition.issuer {
+                        //Calculate the commission and burn amount
+                        let burn_amount = evaluate_rate(coin.amount, definition.burn_rate);
+                        dbg!(&input.address, burn_amount);
+                        let commission_amount =
+                            evaluate_rate(coin.amount, definition.commission_rate);
+                        dbg!(&input.address, commission_amount);
+                        //Ensure the input address has sufficient balance to cover the amount + burn + commision
+                        //Unwraping is fine here, as we know the address exists in the map
+                        if balances_map.get(&input.address).unwrap().coins[idx].amount
+                            < coin.amount + burn_amount + commission_amount
+                        {
                             return Err(format!(
-                                "Insufficient balance on {} in account {}",
-                                coin.denom, input.address
+                                "Inssuficient wallet balance on {} for coin {}",
+                                input.address, coin.denom
                             ));
                         }
-                        //Update the processed balances of the token sender
-                        processed_balances[i].coins[j].amount =
-                            -(burn_amount + commision_amount + coin.amount);
 
-                        //Update the issuer balance based on the commission rate.
-                        //TODO: This logic is pretty ugly, try and clean this up/speed up time complexity significantly
-                        if commision_amount != 0 {
-                            if let Some(issuer_balance) = balances_map.get(&definition.issuer) {
-                                let issuer_coin_index = if let Some(coin) = issuer_balance
-                                    .coins
-                                    .iter()
-                                    .enumerate()
-                                    .find(|(i, c)| c.denom == definition.denom)
-                                {
-                                    i
-                                } else {
-                                    //TODO: Probably return an error here
-                                    //This will never hit if the issuer is supplied in the MultiSend
-                                    return Err("Issuer not found".to_string());
-                                };
-
-                                //Index of issuer balance in processed balances
-                                let issuer_balance_index = if let Some(index) = processed_balances
-                                    .iter()
-                                    .enumerate()
-                                    .find(|(i, balance)| balance.address == issuer_balance.address)
-                                {
-                                    i
-                                } else {
-                                    //TODO: Probably return an error here
-                                    //This will never hit if the issuer is supplied in the MultiSend
-                                    return Err("Issuer not found".to_string());
-                                };
-
-                                processed_balances[issuer_balance_index].coins[issuer_coin_index]
-                                    .amount = commision_amount;
+                        //Update the senders balance in the coin_balance_changes hashmap
+                        if let Some(coin_map) = coin_balance_changes.get_mut(&input.address) {
+                            if let Some(coin_amount) = coin_map.get_mut(&coin.denom) {
+                                *coin_amount += -(burn_amount + commission_amount + coin.amount)
+                            } else {
+                                coin_map.insert(
+                                    coin.denom.clone(),
+                                    -(burn_amount + commission_amount + coin.amount),
+                                );
                             }
+                        } else {
+                            let mut coin_map = HashMap::new();
+                            coin_map.insert(
+                                coin.denom.clone(),
+                                -(burn_amount + commission_amount + coin.amount),
+                            );
+                            coin_balance_changes.insert(input.address.clone(), coin_map);
+                        }
+
+                        //Update the issuers balance in the coin_balance_changes hashmap
+                        if let Some(coin_map) = coin_balance_changes.get_mut(&definition.issuer) {
+                            if let Some(coin_amount) = coin_map.get_mut(&coin.denom) {
+                                *coin_amount += commission_amount
+                            } else {
+                                if commission_amount != 0 {
+                                    coin_map.insert(coin.denom.clone(), commission_amount);
+                                }
+                            }
+                        } else {
+                            if commission_amount != 0 {
+                                let mut coin_map = HashMap::new();
+                                coin_map.insert(coin.denom.clone(), commission_amount);
+                                coin_balance_changes.insert(definition.issuer.clone(), coin_map);
+                            }
+                        }
+                    } else {
+                        //Update the issuers balance in the coin_balance_changes hashmap
+                        //If the issuer is sending the tokens simply decrease the balance by the amount spent
+                        if let Some(coin_map) = coin_balance_changes.get_mut(&input.address) {
+                            if let Some(coin_amount) = coin_map.get_mut(&coin.denom) {
+                                *coin_amount -= coin.amount
+                            } else {
+                                coin_map.insert(coin.denom.clone(), coin.amount);
+                            }
+                        } else {
+                            let mut coin_map = HashMap::new();
+                            coin_map.insert(coin.denom.clone(), -coin.amount);
+                            coin_balance_changes.insert(input.address.clone(), coin_map);
                         }
                     }
                 }
             }
         }
 
-        for (i, output) in multi_send_tx.outputs.iter().enumerate() {
-            for (j, coin) in output.coins.iter().enumerate() {
-                //Update the processed balances of the token receiver
-                processed_balances[i].coins[j].amount =
-                    balances_map.get(&output.address).unwrap().coins[j].amount + coin.amount;
+        //Process the output amounts
+        for output in multi_send_tx.outputs.iter() {
+            for coin in output.coins.iter() {
+                //Update the senders balance in the coin_balance_changes hashmap
+                if let Some(coin_map) = coin_balance_changes.get_mut(&output.address) {
+                    if let Some(coin_amount) = coin_map.get_mut(&coin.denom) {
+                        *coin_amount += coin.amount
+                    } else {
+                        coin_map.insert(coin.denom.clone(), coin.amount);
+                    }
+                } else {
+                    let mut coin_map = HashMap::new();
+                    coin_map.insert(coin.denom.clone(), coin.amount);
+                    coin_balance_changes.insert(output.address.clone(), coin_map);
+                }
             }
         }
-        Ok(processed_balances)
+
+        //Return the processed balances as a vector.
+        Ok(coin_balance_changes
+            .into_iter()
+            .map(|(address, v)| Balance {
+                address,
+                coins: v
+                    .into_iter()
+                    .map(|(denom, amount)| Coin { denom, amount })
+                    .collect::<Vec<Coin>>(),
+            })
+            .collect::<Vec<Balance>>())
     } else {
         return Err("Invalid Multi Send Tx".to_string());
     }
@@ -201,14 +236,137 @@ fn accumulate_denominations_map(
     denominations_map
 }
 
+fn evaluate_rate(amount: i128, rate: f64) -> i128 {
+    round(amount as f64 * rate)
+}
+
 //Helper function to round up an f64 to an i128
 fn round(n: f64) -> i128 {
     (n + 0.5) as i128
 }
+
 #[cfg(test)]
 mod tests {
+    use crate::calculate_balance_changes;
     use crate::{Balance, Coin, DenomDefinition, MultiSend};
+    use std::collections::HashMap;
     use std::error::Error;
+
+    #[test]
+    pub fn test_invalid_sum() -> Result<(), Box<dyn Error>> {
+        let (original_balances, definitions, multi_send) = initialize_invalid_sum_data();
+        assert_eq!(
+            calculate_balance_changes(original_balances, definitions, multi_send).err(),
+            Some("Invalid Multi Send Tx".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    //NOTE: Example #1 from README
+    pub fn test_no_issuer_on_sender_or_receiver() -> Result<(), Box<dyn Error>> {
+        let (original_balances, definitions, multi_send) =
+            initialize_no_issuer_on_sender_or_receiver();
+        let mut assertion_map = HashMap::new();
+        assertion_map.insert(
+            "account_recipient".to_string(),
+            vec![
+                Coin {
+                    denom: "denom1".to_string(),
+                    amount: 1000,
+                },
+                Coin {
+                    denom: "denom2".to_string(),
+                    amount: 1000,
+                },
+            ],
+        );
+        assertion_map.insert(
+            "issuer_account_A".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 120,
+            }],
+        );
+        assertion_map.insert(
+            "account1".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: -1200,
+            }],
+        );
+        assertion_map.insert(
+            "account2".to_string(),
+            vec![Coin {
+                denom: "denom2".to_string(),
+                amount: -2000,
+            }],
+        );
+
+        let balance_changes =
+            calculate_balance_changes(original_balances, definitions, multi_send).unwrap();
+        for balance_change in balance_changes.iter() {
+            assertion_map
+                .get(&balance_change.address)
+                .unwrap()
+                .iter()
+                .zip(balance_change.coins.clone())
+                .for_each(|(assertion_coin, coin)| {
+                    assert_eq!(assertion_coin.amount, coin.amount);
+                })
+        }
+        Ok(())
+    }
+    #[test]
+    pub fn test_issuer_exists_on_sender_receiver() -> Result<(), Box<dyn Error>> {
+        let (original_balances, definitions, multi_send) =
+            initialize_issuer_exists_on_sender_receiver();
+        let mut assertion_map = HashMap::new();
+        assertion_map.insert(
+            "account_recipient".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 500,
+            }],
+        );
+        assertion_map.insert(
+            "issuer_account_A".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 560,
+            }],
+        );
+        assertion_map.insert(
+            "account1".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: -715,
+            }],
+        );
+        assertion_map.insert(
+            "account2".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: -385,
+            }],
+        );
+
+        let balance_changes =
+            calculate_balance_changes(original_balances, definitions, multi_send).unwrap();
+        for balance_change in balance_changes.iter() {
+            assertion_map
+                .get(&balance_change.address)
+                .unwrap()
+                .iter()
+                .zip(balance_change.coins.clone())
+                .for_each(|(assertion_coin, coin)| {
+                    assert_eq!(assertion_coin.amount, coin.amount);
+                })
+        }
+        Ok(())
+    }
+
+    //Test setup helper functions
     fn initialize_invalid_sum_data() -> (Vec<Balance>, Vec<DenomDefinition>, MultiSend) {
         let mut original_balances: Vec<Balance> = vec![];
         let mut definitions: Vec<DenomDefinition> = vec![];
@@ -246,15 +404,133 @@ mod tests {
         (original_balances, definitions, multi_send)
     }
 
-    #[test]
-    pub fn test_invalid_sum() -> Result<(), Box<dyn Error>> {
-        use crate::calculate_balance_changes;
+    fn initialize_no_issuer_on_sender_or_receiver(
+    ) -> (Vec<Balance>, Vec<DenomDefinition>, MultiSend) {
+        let mut original_balances: Vec<Balance> = vec![];
+        let mut definitions: Vec<DenomDefinition> = vec![];
 
-        let (original_balances, definitions, multi_send) = initialize_invalid_sum_data();
-        assert_eq!(
-            calculate_balance_changes(original_balances, definitions, multi_send).err(),
-            Some("Invalid Multi Send Tx".to_string())
-        );
-        Ok(())
+        original_balances.push(Balance {
+            address: "account1".to_string(),
+            coins: vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 1000_000,
+            }],
+        });
+        original_balances.push(Balance {
+            address: "account2".to_string(),
+            coins: vec![Coin {
+                denom: "denom2".to_string(),
+                amount: 1000_000,
+            }],
+        });
+        definitions.push(DenomDefinition {
+            denom: "denom1".to_string(),
+            issuer: "issuer_account_A".to_string(),
+            burn_rate: 0.08_f64,
+            commission_rate: 0.12_f64,
+        });
+        definitions.push(DenomDefinition {
+            denom: "denom2".to_string(),
+            issuer: "issuer_account_B".to_string(),
+            burn_rate: 1_f64,
+            commission_rate: 0_f64,
+        });
+        let multi_send: MultiSend = MultiSend {
+            inputs: vec![
+                Balance {
+                    address: "account1".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom1".to_string(),
+                        amount: 1000,
+                    }],
+                },
+                Balance {
+                    address: "account2".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom2".to_string(),
+                        amount: 1000,
+                    }],
+                },
+            ],
+            outputs: vec![Balance {
+                address: "account_recipient".to_string(),
+                coins: vec![
+                    Coin {
+                        denom: "denom1".to_string(),
+                        amount: 1000,
+                    },
+                    Coin {
+                        denom: "denom2".to_string(),
+                        amount: 1000,
+                    },
+                ],
+            }],
+        };
+
+        (original_balances, definitions, multi_send)
+    }
+
+    fn initialize_issuer_exists_on_sender_receiver(
+    ) -> (Vec<Balance>, Vec<DenomDefinition>, MultiSend) {
+        let mut original_balances: Vec<Balance> = vec![];
+        let mut definitions: Vec<DenomDefinition> = vec![];
+
+        original_balances.push(Balance {
+            address: "account1".to_string(),
+            coins: vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 1000_000,
+            }],
+        });
+        original_balances.push(Balance {
+            address: "account2".to_string(),
+            coins: vec![Coin {
+                denom: "denom2".to_string(),
+                amount: 1000_000,
+            }],
+        });
+        definitions.push(DenomDefinition {
+            denom: "denom1".to_string(),
+            issuer: "issuer_account_A".to_string(),
+            burn_rate: 0.08_f64,
+            commission_rate: 0.12_f64,
+        });
+
+        let multi_send: MultiSend = MultiSend {
+            inputs: vec![
+                Balance {
+                    address: "account1".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom1".to_string(),
+                        amount: 650,
+                    }],
+                },
+                Balance {
+                    address: "account2".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom2".to_string(),
+                        amount: 350,
+                    }],
+                },
+            ],
+            outputs: vec![
+                Balance {
+                    address: "account_recipient".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom1".to_string(),
+                        amount: 500,
+                    }],
+                },
+                Balance {
+                    address: "issuer_account_A".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom1".to_string(),
+                        amount: 500,
+                    }],
+                },
+            ],
+        };
+
+        (original_balances, definitions, multi_send)
     }
 }
