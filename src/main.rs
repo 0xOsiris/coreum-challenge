@@ -521,14 +521,14 @@ mod tests {
             "account1".to_string(),
             vec![Coin {
                 denom: "denom1".to_string(),
-                amount: -1,
+                amount: -1, //This is kind of a ? from example #5.. I think it should be -1, but don't really understand how the amount could come out a +3 since the user is spending not receiving
             }],
         );
         assertion_map.insert(
             "account2".to_string(),
             vec![Coin {
                 denom: "denom1".to_string(),
-                amount: -1,
+                amount: -1, //This is kind of a ? from example #5.. I think it should be -1, but don't really understand how the amount could come out a +3 since the user is spending not receiving
             }],
         );
 
