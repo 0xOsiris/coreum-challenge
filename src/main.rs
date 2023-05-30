@@ -38,7 +38,8 @@ impl MultiSend {
         }
     }
 }
-//Burn and commission rate data.
+
+//Struct holding relevant data to efficiently validate/process the transaction
 pub struct TxData {
     multi_send_tx: MultiSend,
     original_balances: Vec<Balance>,
@@ -87,7 +88,7 @@ impl TxData {
     }
 
     //Initializes the burn & commission data necessary for burn/commision calculations.
-    ///NOTE: Must be called after the prior 2 initialization functions to accurately calculate the data.
+    ///NOTE: Must be called after the prior 2 initialization functions to initialize the HashMaps.
     pub fn initialize_bc_data(&mut self) {
         //Populate non_issuer_input_sum_map
         for input in self.multi_send_tx.inputs.iter() {
@@ -125,6 +126,7 @@ impl TxData {
             }
         }
     }
+
     //Collect the nested hashmap into a Vec<Balance>
     pub fn collect_balance_changes(self) -> Vec<Balance> {
         self.coin_balance_changes_map
@@ -213,6 +215,7 @@ fn calculate_balance_changes(
     multi_send_tx.validate_multi_send_tx()?;
 
     let mut tx_data = TxData::new(multi_send_tx, original_balances, definitions);
+
     //Initialize the maps for denoms & balances
     tx_data.initialize_balances_map();
     tx_data.initialize_definitions_map();
@@ -227,11 +230,13 @@ fn calculate_balance_changes(
             if let Some(definition) = tx_data.denom_definitions_map.get(&coin.denom) {
                 //Only decrease balance by the burn/commission if the address is not the issuer.
                 if input.address != definition.issuer {
+                    //Get the non_issuer_input_sum & non_issuer_output_sum for the denom
                     let non_issuer_input_sum =
                         tx_data.non_issuer_input_sum_map.get(&coin.denom).unwrap(); //Unwrap since all should be copacetic in the map
                     let non_issuer_output_sum =
                         tx_data.non_issuer_output_sum_map.get(&coin.denom).unwrap(); //Here as well
 
+                    //Calculate the total burn/commission
                     let total_bc = min(*non_issuer_input_sum, *non_issuer_output_sum);
                     //Calculate the commission and burn amount
                     let burn_amount = evaluate_rate(
@@ -240,19 +245,28 @@ fn calculate_balance_changes(
                         total_bc,
                         *non_issuer_input_sum,
                     );
-                    dbg!(burn_amount);
                     let commission_amount = evaluate_rate(
                         coin.amount,
                         definition.commission_rate,
                         total_bc,
                         *non_issuer_input_sum,
                     );
-                    dbg!(commission_amount);
                     //Ensure the input address has sufficient balance to cover the amount + burn + commision
                     //Unwraping is fine here, as we know the address exists in the map
-                    if tx_data.balances_map.get(&input.address).unwrap().coins[idx].amount
-                        < coin.amount + burn_amount + commission_amount
+                    if let Some(_coin) = tx_data
+                        .balances_map
+                        .get(&input.address)
+                        .unwrap()
+                        .coins
+                        .get(idx)
                     {
+                        if _coin.amount < coin.amount + burn_amount + commission_amount {
+                            return Err(format!(
+                                "Inssuficient wallet balance on {} for coin {}",
+                                input.address, coin.denom
+                            ));
+                        }
+                    } else {
                         return Err(format!(
                             "Inssuficient wallet balance on {} for coin {}",
                             input.address, coin.denom
@@ -485,6 +499,54 @@ mod tests {
                 })
         }
         Ok(())
+    }
+    #[test]
+    ///NOTE: Example #3
+    pub fn test_insufficient_balance() -> Result<(), Box<dyn Error>> {
+        let (original_balances, definitions, multi_send) = initialize_insufficient_balance_data();
+        assert_eq!(
+            calculate_balance_changes(original_balances, definitions, multi_send).err(),
+            Some(format!(
+                "Inssuficient wallet balance on {} for coin {}",
+                "account1", "denom1"
+            ))
+        );
+        Ok(())
+    }
+
+    //Test setup helper functions
+    fn initialize_insufficient_balance_data() -> (Vec<Balance>, Vec<DenomDefinition>, MultiSend) {
+        let mut original_balances: Vec<Balance> = vec![];
+        let mut definitions: Vec<DenomDefinition> = vec![];
+
+        original_balances.push(Balance {
+            address: "account1".to_string(),
+            coins: vec![],
+        });
+        definitions.push(DenomDefinition {
+            denom: "denom1".to_string(),
+            issuer: "issuer_account_A".to_string(),
+            burn_rate: 0_f64,
+            commission_rate: 0_f64,
+        });
+        let multi_send: MultiSend = MultiSend {
+            inputs: vec![Balance {
+                address: "account1".to_string(),
+                coins: vec![Coin {
+                    denom: "denom1".to_string(),
+                    amount: 350,
+                }],
+            }],
+            outputs: vec![Balance {
+                address: "account_recipient".to_string(),
+                coins: vec![Coin {
+                    denom: "denom1".to_string(),
+                    amount: 350,
+                }],
+            }],
+        };
+
+        (original_balances, definitions, multi_send)
     }
 
     //Test setup helper functions
