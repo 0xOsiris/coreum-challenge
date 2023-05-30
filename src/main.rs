@@ -301,19 +301,15 @@ fn calculate_balance_changes(
                     {
                         if let Some(coin_amount) = coin_map.get_mut(&coin.denom) {
                             *coin_amount += commission_amount
-                        } else {
-                            if commission_amount != 0 {
-                                coin_map.insert(coin.denom.clone(), commission_amount);
-                            }
-                        }
-                    } else {
-                        if commission_amount != 0 {
-                            let mut coin_map = HashMap::new();
+                        } else if commission_amount != 0 {
                             coin_map.insert(coin.denom.clone(), commission_amount);
-                            tx_data
-                                .coin_balance_changes_map
-                                .insert(definition.issuer.clone(), coin_map);
                         }
+                    } else if commission_amount != 0 {
+                        let mut coin_map = HashMap::new();
+                        coin_map.insert(coin.denom.clone(), commission_amount);
+                        tx_data
+                            .coin_balance_changes_map
+                            .insert(definition.issuer.clone(), coin_map);
                     }
                 } else {
                     //Update the issuers balance in the coin_balance_changes hashmap
@@ -558,7 +554,7 @@ mod tests {
             address: "account1".to_string(),
             coins: vec![Coin {
                 denom: "denom1".to_string(),
-                amount: 1000_000,
+                amount: 1_000_000,
             }],
         });
         definitions.push(DenomDefinition {
@@ -596,14 +592,14 @@ mod tests {
             address: "account1".to_string(),
             coins: vec![Coin {
                 denom: "denom1".to_string(),
-                amount: 1000_000,
+                amount: 1_000_000,
             }],
         });
         original_balances.push(Balance {
             address: "account2".to_string(),
             coins: vec![Coin {
                 denom: "denom2".to_string(),
-                amount: 1000_000,
+                amount: 1_000_000,
             }],
         });
         definitions.push(DenomDefinition {
@@ -662,14 +658,14 @@ mod tests {
             address: "account1".to_string(),
             coins: vec![Coin {
                 denom: "denom1".to_string(),
-                amount: 1000_000,
+                amount: 1_000_000,
             }],
         });
         original_balances.push(Balance {
             address: "account2".to_string(),
             coins: vec![Coin {
                 denom: "denom2".to_string(),
-                amount: 1000_000,
+                amount: 1_000_000,
             }],
         });
         definitions.push(DenomDefinition {
