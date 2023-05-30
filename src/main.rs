@@ -383,6 +383,7 @@ mod tests {
     use std::error::Error;
 
     #[test]
+    //NOTE: Example #4 from README
     pub fn test_invalid_sum() -> Result<(), Box<dyn Error>> {
         let (original_balances, definitions, multi_send) = initialize_invalid_sum_data();
         assert_eq!(
@@ -448,7 +449,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    ///NOTE: Example #2
+    ///NOTE: Example #2 from README
     pub fn test_issuer_exists_on_sender_receiver() -> Result<(), Box<dyn Error>> {
         let (original_balances, definitions, multi_send) =
             initialize_issuer_exists_on_sender_receiver();
@@ -496,8 +497,57 @@ mod tests {
         }
         Ok(())
     }
+
     #[test]
-    ///NOTE: Example #3
+    ///NOTE: Example #2 from README
+    pub fn test_demonstrate_rounding_up() -> Result<(), Box<dyn Error>> {
+        let (original_balances, definitions, multi_send) = initialize_rounding_up_data();
+        let mut assertion_map = HashMap::new();
+        assertion_map.insert(
+            "account_recipient".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 2,
+            }],
+        );
+        assertion_map.insert(
+            "issuer_account_A".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 2,
+            }],
+        );
+        assertion_map.insert(
+            "account1".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: -1,
+            }],
+        );
+        assertion_map.insert(
+            "account2".to_string(),
+            vec![Coin {
+                denom: "denom1".to_string(),
+                amount: -1,
+            }],
+        );
+
+        let balance_changes =
+            calculate_balance_changes(original_balances, definitions, multi_send).unwrap();
+        for balance_change in balance_changes.iter() {
+            assertion_map
+                .get(&balance_change.address)
+                .unwrap()
+                .iter()
+                .zip(balance_change.coins.clone())
+                .for_each(|(assertion_coin, coin)| {
+                    assert_eq!(assertion_coin.amount, coin.amount);
+                })
+        }
+        Ok(())
+    }
+    #[test]
+    ///NOTE: Example #3 from README
     pub fn test_insufficient_balance() -> Result<(), Box<dyn Error>> {
         let (original_balances, definitions, multi_send) = initialize_insufficient_balance_data();
         assert_eq!(
@@ -538,6 +588,61 @@ mod tests {
                 coins: vec![Coin {
                     denom: "denom1".to_string(),
                     amount: 350,
+                }],
+            }],
+        };
+
+        (original_balances, definitions, multi_send)
+    }
+
+    fn initialize_rounding_up_data() -> (Vec<Balance>, Vec<DenomDefinition>, MultiSend) {
+        let mut original_balances: Vec<Balance> = vec![];
+        let mut definitions: Vec<DenomDefinition> = vec![];
+
+        original_balances.push(Balance {
+            address: "account1".to_string(),
+            coins: vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 1000,
+            }],
+        });
+        original_balances.push(Balance {
+            address: "account2".to_string(),
+            coins: vec![Coin {
+                denom: "denom1".to_string(),
+                amount: 1000,
+            }],
+        });
+
+        definitions.push(DenomDefinition {
+            denom: "denom1".to_string(),
+            issuer: "issuer_account_A".to_string(),
+            burn_rate: 0.01_f64,
+            commission_rate: 0.01_f64,
+        });
+        let multi_send: MultiSend = MultiSend {
+            inputs: vec![
+                Balance {
+                    address: "account1".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom1".to_string(),
+                        amount: 1,
+                    }],
+                },
+                Balance {
+                    address: "account2".to_string(),
+                    coins: vec![Coin {
+                        denom: "denom1".to_string(),
+                        amount: 1,
+                    }],
+                },
+            ],
+
+            outputs: vec![Balance {
+                address: "account_recipient".to_string(),
+                coins: vec![Coin {
+                    denom: "denom1".to_string(),
+                    amount: 2,
                 }],
             }],
         };
